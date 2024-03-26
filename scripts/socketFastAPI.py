@@ -42,11 +42,11 @@ tiempo=0
 contador=0
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-print("Esperando la conexión de Spark...")
+print("Waiting Spark connection...")
 s.bind(('localhost', puerto))
 s.listen(1)
 conn, addr = s.accept() 
-print("Iniciando la conexión a AirCraftScatter ")
+print("Init to AirCraftScatter connection")
 
 while (tiempo<60 and contador < 50):    
     inicio = time.time()
@@ -58,9 +58,9 @@ while (tiempo<60 and contador < 50):
     n=len(vuelos)
     print()
     contador+=1
-    print(contador,":","Aviones sobre Europa: ",n)
+    print(contador,":","Flights over Europe: ",n)
     datosLimpios=  json.dumps(datos)
     conn.sendall((datosLimpios+"\n").encode('utf-8'))  
-    time.sleep(10) # espera para no sobrecargar el servidor con peticiones
+    time.sleep(10) # wait 10 seconds to avoid overload server
 
 conn.close()

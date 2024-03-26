@@ -5,13 +5,11 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import explode,from_json,schema_of_json,lit, col, from_unixtime, sin, cos, sqrt, atan2, toRadians, pow
 #from pyspark.sql.types import StructType, StringType, IntegerType, DoubleType
 
-#Añade las importaciones que consideres necesarias
-
 ejemplo='{"ac": [{"flight": "RYR80XN ","lat": 40.783493,"lon": -9.551697, "alt_baro": 37000,"category": "A3"}], "ctime": 1702444273059, "msg": "No error", "now": 1702444272731, "ptime": 6, "total": 146}'
 
 encabezados = ['flight','lat','lon','alt_baro','category']  
 
-# Definició dels limits de area Catalunya
+# Limits of area de Catalunya
 top_left = (42.924299, 0.500251)
 bottom_right = (40.294028, 3.567923)
 
@@ -27,32 +25,35 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return distance
 
 
-# Iniciar Spark Session
+# Initialize Spark Session
 spark = SparkSession.builder \
     .appName("STRUCTURED STREAMING") \
     .getOrCreate()
 
-# Socket port i host 
+
+# Socket port and host 
 host = "localhost"
 puerto = 10029
 
-# Conexió al Socket pel port asignat
+
+# Load the stream from the socket
 flujo = spark.readStream \
     .format("socket") \
     .option("host", host) \
     .option("port", puerto) \
     .load()
 
-# Interpretar y estructurar la cadena de texte JSON
+
+# StructType equivalent to schema_of_json
 esquema_json = schema_of_json(ejemplo)
 datos_json = flujo.select(from_json(col("value"), esquema_json).alias("datos"))
 
 aviones_con_now = datos_json.select(explode(col("datos.ac")).alias("avion"), col("datos.now").alias("now"))
 
-# Crear DataFrame amb les columnas especificades + el camp 'now'
+# Create DataFrame with specified columns + 'now' field
 df_aviones = aviones_con_now.select([col("avion." + header).alias(header) for header in encabezados] + [col("now")])
 
-# Filtrar vuelos dentro del área de Catalunya, agregar columna 'timestamp' i eliminar 'now'
+# Filter inside Catalunya area, add column 'timestamp' and remove column 'now'
 df_filtered = df_aviones.filter(
     (col("lat") <= top_left[0]) & 
     (col("lat") >= bottom_right[0]) &
@@ -66,19 +67,16 @@ barcelona_airport = (41.2971, 2.0833)
 tarragona_airport = (41.1474, 1.1672)
 girona_airport = (41.9009, 2.7606)
 
-# Calcul de distanciies
+# Distance calculation
 df_filtered = df_filtered.withColumn("distance_to_barcelona", haversine_distance(col("lat"), col("lon"), lit(barcelona_airport[0]), lit(barcelona_airport[1])))
 df_filtered = df_filtered.withColumn("distance_to_tarragona", haversine_distance(col("lat"), col("lon"), lit(tarragona_airport[0]), lit(tarragona_airport[1])))
 df_filtered = df_filtered.withColumn("distance_to_girona", haversine_distance(col("lat"), col("lon"), lit(girona_airport[0]), lit(girona_airport[1])))
 
-
-# Group by category (Descomentar per Exercici4_2 i afegir df_grouped.writeStream a linia 82)
+# Groupby category desc if necessary
 #df_grouped = df_filtered.groupBy("category").count().orderBy(col("count").desc())
 
 
-# Sortida per console de la informació processada
-# outputMode("append") per Exercici4_1
-# outputMode("complete") per Exercici4_2
+# Start the stream
 resultado = df_filtered.writeStream \
     .outputMode("append") \
     .format("console") \

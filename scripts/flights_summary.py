@@ -1,54 +1,87 @@
 import findspark
 findspark.init("/opt/cloudera/parcels/CDH-6.2.0-1.cdh6.2.0.p0.967373/lib/spark")
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import rand, expr, col, unix_timestamp
-from pyspark.sql.types import TimestampType
-import time
 
-# Creem Spark Session
-spark = SparkSession.builder.appName("SparkStreaming").getOrCreate()
+from pyspark.sql.functions import explode,from_json,schema_of_json,lit, col, from_unixtime, sin, cos, sqrt, atan2, toRadians, pow
+#from pyspark.sql.types import StructType, StringType, IntegerType, DoubleType
 
-spark.conf.set("spark.sql.shuffle.partitions", "1")
+#Añade las importaciones que consideres necesarias
 
-impresiones = (
-  spark
-    .readStream.format("rate").option("rowsPerSecond", "1").option("numPartitions", "1").load()
-    .selectExpr("value AS idAnuncio", "timestamp AS tiempoImpresion")
-)
+ejemplo='{"ac": [{"flight": "RYR80XN ","lat": 40.783493,"lon": -9.551697, "alt_baro": 37000,"category": "A3"}], "ctime": 1702444273059, "msg": "No error", "now": 1702444272731, "ptime": 6, "total": 146}'
 
-# Creem les columnes idAnunci i tempsClic amb 1 segon d' interval despres de tiempoImpresion 
-# i seleccionem de manera aleatòria només el 20% de files.
-clics = (
-  impresiones
-    .withColumn("idAnunci", expr("idAnuncio"))
-    .withColumn("tempsClic", expr("tiempoImpresion + INTERVAL 1 second"))
-    .filter(rand() < 0.2)  # Seleccionem de manera aleatòria menys del 20%
-    .drop("idAnuncio", "tiempoImpresion")
-)
+encabezados = ['flight','lat','lon','alt_baro','category']  
+
+# Definició dels limits de area Catalunya
+top_left = (42.924299, 0.500251)
+bottom_right = (40.294028, 3.567923)
+
+# Define the Haversine formula as a function
+# https://stackoverflow.com/questions/4913349/haversine-formula-in-python-bearing-and-distance-between-two-gps-points
+def haversine_distance(lat1, lon1, lat2, lon2):
+    radius = 6371  # Earth radius in kilometers
+    delta_lat = toRadians(lat2 - lat1)
+    delta_lon = toRadians(lon2 - lon1)
+    a = pow(sin(delta_lat / 2), 2) + cos(toRadians(lat1)) * cos(toRadians(lat2)) * pow(sin(delta_lon / 2), 2)
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    distance = radius * c
+    return distance
 
 
-# Combinem amb join els dos streams de dades i afegim watermark per no acceptar dades amb >15 seg. de retard
-# i afegim la columna deltaT amb la diferència de temps en segons entre el clic i la impressió del anunci.
-combinacio = (
-    impresiones.join(clics, impresiones.idAnuncio == clics.idAnunci)
-    .withWatermark("tiempoImpresion", "15 seconds")
-    .withWatermark("tempsClic", "15 seconds")
-    .select(
-        col("idAnuncio"), 
-        col("tiempoImpresion"), 
-        col("tempsClic"),
-        (unix_timestamp("tempsClic") - unix_timestamp("tiempoImpresion")).alias("deltaT")
-    )
-)
+# Iniciar Spark Session
+spark = SparkSession.builder \
+    .appName("STRUCTURED STREAMING") \
+    .getOrCreate()
 
-resCombinacio = (
-  combinacio
-    .writeStream
-    .outputMode("append")
-    .format("console")
-    .trigger(processingTime='5 seconds')
+# Socket port i host 
+host = "localhost"
+puerto = 10029
+
+# Conexió al Socket pel port asignat
+flujo = spark.readStream \
+    .format("socket") \
+    .option("host", host) \
+    .option("port", puerto) \
+    .load()
+
+# Interpretar y estructurar la cadena de texte JSON
+esquema_json = schema_of_json(ejemplo)
+datos_json = flujo.select(from_json(col("value"), esquema_json).alias("datos"))
+
+aviones_con_now = datos_json.select(explode(col("datos.ac")).alias("avion"), col("datos.now").alias("now"))
+
+# Crear DataFrame amb les columnas especificades + el camp 'now'
+df_aviones = aviones_con_now.select([col("avion." + header).alias(header) for header in encabezados] + [col("now")])
+
+# Filtrar vuelos dentro del área de Catalunya, agregar columna 'timestamp' i eliminar 'now'
+df_filtered = df_aviones.filter(
+    (col("lat") <= top_left[0]) & 
+    (col("lat") >= bottom_right[0]) &
+    (col("lon") >= top_left[1]) & 
+    (col("lon") <= bottom_right[1])
+).withColumn("timestamp", from_unixtime(col("now")/1000)).drop(col("now"))
+
+# Assuming df is the DataFrame with columns 'lat' and 'lon'
+# Coordinates for the airports
+barcelona_airport = (41.2971, 2.0833)
+tarragona_airport = (41.1474, 1.1672)
+girona_airport = (41.9009, 2.7606)
+
+# Calcul de distanciies
+df_filtered = df_filtered.withColumn("distance_to_barcelona", haversine_distance(col("lat"), col("lon"), lit(barcelona_airport[0]), lit(barcelona_airport[1])))
+df_filtered = df_filtered.withColumn("distance_to_tarragona", haversine_distance(col("lat"), col("lon"), lit(tarragona_airport[0]), lit(tarragona_airport[1])))
+df_filtered = df_filtered.withColumn("distance_to_girona", haversine_distance(col("lat"), col("lon"), lit(girona_airport[0]), lit(girona_airport[1])))
+
+
+# Group by category (Descomentar per Exercici4_2 i afegir df_grouped.writeStream a linia 82)
+#df_grouped = df_filtered.groupBy("category").count().orderBy(col("count").desc())
+
+
+# Sortida per console de la informació processada
+# outputMode("append") per Exercici4_1
+# outputMode("complete") per Exercici4_2
+resultado = df_filtered.writeStream \
+    .outputMode("append") \
+    .format("console") \
     .start()
-)
 
-resCombinacio.awaitTermination()
-#resClics.awaitTermination()
+resultado.awaitTermination()
